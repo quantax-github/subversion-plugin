@@ -68,7 +68,8 @@ public class CheckoutUpdater extends WorkspaceUpdater {
 
             @Override
             public List<External> perform() throws IOException, InterruptedException {
-                final SVNUpdateClient svnuc = clientManager.getUpdateClient();
+            	throw new IOException("Quantax subversion plugin patch: Usage of CheckoutUpdater is not allowed!");
+                /*final SVNUpdateClient svnuc = clientManager.getUpdateClient();
                 final List<External> externals = new ArrayList<External>(); // store discovered externals to here
 
                 listener.getLogger().println("Cleaning local Directory " + location.getLocalDir());
@@ -121,6 +122,7 @@ public class CheckoutUpdater extends WorkspaceUpdater {
                 }
 
                 return externals;
+                */
             }
         };
     }

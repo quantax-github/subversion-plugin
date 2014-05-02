@@ -27,6 +27,12 @@ package hudson.scm;
 
 import static hudson.scm.SubversionSCM.compareSVNAuthentications;
 import static org.jvnet.hudson.test.recipes.PresetData.DataSet.ANONYMOUS_READONLY;
+
+import com.cloudbees.plugins.credentials.Credentials;
+import com.cloudbees.plugins.credentials.CredentialsScope;
+import com.cloudbees.plugins.credentials.SystemCredentialsProvider;
+import com.cloudbees.plugins.credentials.domains.Domain;
+import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl;
 import hudson.FilePath;
 import hudson.Launcher;
 import hudson.Proc;
@@ -66,6 +72,7 @@ import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -112,6 +119,8 @@ import com.gargoylesoftware.htmlunit.WebResponse;
 import com.gargoylesoftware.htmlunit.html.HtmlAnchor;
 import com.gargoylesoftware.htmlunit.html.HtmlForm;
 import com.gargoylesoftware.htmlunit.html.HtmlPage;
+import hudson.EnvVars;
+import hudson.model.EnvironmentContributor;
 
 /**
  * @author Kohsuke Kawaguchi
@@ -406,6 +415,7 @@ public class SubversionSCMTest extends AbstractSubversionTest {
         WebResponse resp = conn.getResponse(wr);
         assertTrue(isGoodHttpStatus(resp.getStatusCode()));
 
+        Thread.sleep(1000);
         waitUntilNoActivity();
         FreeStyleBuild b = p.getLastBuild();
         assertNotNull(b);
@@ -431,6 +441,7 @@ public class SubversionSCMTest extends AbstractSubversionTest {
         WebResponse resp = conn.getResponse(wr);
         assertTrue(isGoodHttpStatus(resp.getStatusCode()));
 
+        Thread.sleep(1000);
         waitUntilNoActivity();
         FreeStyleBuild b = p.getLastBuild();
         assertNotNull(b);
@@ -855,7 +866,7 @@ public class SubversionSCMTest extends AbstractSubversionTest {
           File repo = new CopyExisting(getClass().getResource("JENKINS-10449.zip")).allocate();
           SubversionSCM scm = new SubversionSCM(ModuleLocation.parse(new String[]{"file://" + repo.toURI().toURL().getPath()},
                                                                      new String[]{"."},null,null),
-                                                new UpdateUpdater(), null, "/z.*", "", "", "", "", false, shouldFilterLog);
+                                                new UpdateUpdater(), null, "/z.*", "", "", "", "", false, shouldFilterLog, null);
 
           FreeStyleProject p = createFreeStyleProject(String.format("testFilterChangelog-%s", shouldFilterLog));
           p.setScm(scm);
@@ -1109,9 +1120,11 @@ public class SubversionSCMTest extends AbstractSubversionTest {
 
     /**
      * Make sure that a failed credential doesn't result in an infinite loop
+     *
+     * TODO: verify that this test case is invalid for new credentials based world order
      */
     @Bug(2909)
-    public void testInfiniteLoop() throws Exception {
+    public void invalidTestInfiniteLoop() throws Exception {
         // creates a purely in memory auth manager
         ISVNAuthenticationManager m = createInMemoryManager();
 
@@ -1154,9 +1167,11 @@ public class SubversionSCMTest extends AbstractSubversionTest {
 
     /**
      * Even if the default providers remember bogus passwords, Hudson should still attempt what it knows.
+     *
+     * TODO: verify that this test case is invalid for new credentials based world order
      */
     @Bug(3936)
-    public void test3936()  throws Exception {
+    public void invalidTest3936()  throws Exception {
         // creates a purely in memory auth manager
         ISVNAuthenticationManager m = createInMemoryManager();
 
@@ -1232,23 +1247,55 @@ public class SubversionSCMTest extends AbstractSubversionTest {
         assertEquals(getActualRevision(p.getLastBuild(), "https://svn.jenkins-ci.org/trunk/hudson/test-projects/trivial-ant").toString(), builder.getEnvVars().get("SVN_REVISION"));
     }
 
+    public void testRecursiveEnvironmentVariables() throws Exception {
+        EnvironmentContributor.all().add(new EnvironmentContributor() {
+            @Override public void buildEnvironmentFor(Run run, EnvVars ev, TaskListener tl) throws IOException, InterruptedException {
+                ev.put("TOOL", "ant");
+                ev.put("ROOT", "https://svn.jenkins-ci.org/trunk/hudson/test-projects/trivial-${TOOL}");
+            }
+        });
+        FreeStyleProject p = createFreeStyleProject("job-with-envs");
+        p.setScm(new SubversionSCM("$ROOT"));
+        CaptureEnvironmentBuilder builder = new CaptureEnvironmentBuilder();
+        p.getBuildersList().add(builder);
+        assertBuildStatusSuccess(p.scheduleBuild2(0));
+        assertTrue(p.getLastBuild().getWorkspace().child("build.xml").exists());
+        assertEquals("https://svn.jenkins-ci.org/trunk/hudson/test-projects/trivial-ant", builder.getEnvVars().get("SVN_URL"));
+        assertEquals(getActualRevision(p.getLastBuild(), "https://svn.jenkins-ci.org/trunk/hudson/test-projects/trivial-ant").toString(), builder.getEnvVars().get("SVN_REVISION"));
+        assertEquals("https://svn.jenkins-ci.org/trunk/hudson/test-projects/trivial-ant", builder.getEnvVars().get("SVN_URL_1"));
+        assertEquals(getActualRevision(p.getLastBuild(), "https://svn.jenkins-ci.org/trunk/hudson/test-projects/trivial-ant").toString(), builder.getEnvVars().get("SVN_REVISION_1"));
+    }
+
     @Bug(1379)
     public void testMultipleCredentialsPerRepo() throws Exception {
         Proc p = runSvnServe(getClass().getResource("HUDSON-1379.zip"));
         try {
+            SystemCredentialsProvider.getInstance().setDomainCredentialsMap(Collections.singletonMap(Domain.global(),
+                    Collections.<Credentials>emptyList()
+            ));
+
             FreeStyleProject b = createFreeStyleProject();
-            b.setScm(new SubversionSCM("svn://localhost/bob"));
+            b.setScm(new SubversionSCM("svn://localhost/bob", "1-bob", "."));
 
             FreeStyleProject c = createFreeStyleProject();
-            c.setScm(new SubversionSCM("svn://localhost/charlie"));
+            c.setScm(new SubversionSCM("svn://localhost/charlie", "2-charlie", "."));
 
             // should fail without a credential
-            assertBuildStatus(Result.FAILURE,b.scheduleBuild2(0).get());
-            descriptor.postCredential(b,"svn://localhost/bob","bob","bob",null,new PrintWriter(System.out));
+            assertBuildStatus(Result.FAILURE, b.scheduleBuild2(0).get());
+            SystemCredentialsProvider.getInstance().setDomainCredentialsMap(Collections.singletonMap(Domain.global(),
+                    Arrays.<Credentials>asList(
+                    new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, "1-bob", null, "bob","bob")
+                    )
+            ));
             buildAndAssertSuccess(b);
 
-            assertBuildStatus(Result.FAILURE,c.scheduleBuild2(0).get());
-            descriptor.postCredential(c,"svn://localhost/charlie","charlie","charlie",null,new PrintWriter(System.out));
+            assertBuildStatus(Result.FAILURE, c.scheduleBuild2(0).get());
+            SystemCredentialsProvider.getInstance().setDomainCredentialsMap(Collections.singletonMap(Domain.global(),
+                    Arrays.<Credentials>asList(
+                    new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, "1-bob", null, "bob","bob"),
+                    new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, "2-charlie", null, "charlie","charlie")
+                    )
+            ));
             buildAndAssertSuccess(c);
 
             // b should still build fine.
@@ -1289,6 +1336,11 @@ public class SubversionSCMTest extends AbstractSubversionTest {
     public void testSuperUserForAllRepos() throws Exception {
         Proc p = runSvnServe(getClass().getResource("HUDSON-1379.zip"));
         try {
+            SystemCredentialsProvider.getInstance().setDomainCredentialsMap(Collections.singletonMap(Domain.global(),
+                    Arrays.<Credentials>asList(
+                    new UsernamePasswordCredentialsImpl(CredentialsScope.GLOBAL, "1-alice", null, "alice","alice")
+                    )
+            ));
             FreeStyleProject b = createFreeStyleProject();
             b.setScm(new SubversionSCM("svn://localhost/bob"));
 
@@ -1299,8 +1351,9 @@ public class SubversionSCMTest extends AbstractSubversionTest {
             assertBuildStatus(Result.FAILURE,b.scheduleBuild2(0).get());
             assertBuildStatus(Result.FAILURE,c.scheduleBuild2(0).get());
 
+            b.setScm(new SubversionSCM("svn://localhost/bob", "1-alice", "."));
+            c.setScm(new SubversionSCM("svn://localhost/charlie", "1-alice", "."));
             // but with the super user credential both should work now
-            descriptor.postCredential(b,"svn://localhost/bob","alice","alice",null,new PrintWriter(System.out));
             buildAndAssertSuccess(b);
             buildAndAssertSuccess(c);
         } finally {
@@ -1532,5 +1585,102 @@ public class SubversionSCMTest extends AbstractSubversionTest {
         } finally {
             p.kill();
         }
+    }
+
+    @Bug(17974)
+    public void testChangingDepthInJob() throws Exception {
+        Proc p = runSvnServe(getClass().getResource("JENKINS-777.zip"));
+
+        try {
+            // enable 1.6 mode
+            HtmlForm f = createWebClient().goTo("configure").getFormByName("config");
+            f.getSelectByName("svn.workspaceFormat").setSelectedAttribute("10",true);
+            submit(f);
+
+            FreeStyleProject b = createFreeStyleProject();
+
+            ModuleLocation[] locations = {
+                    new ModuleLocation("svn://localhost/jenkins-777/proja", "proja", "infinity", true)
+                };
+
+            // Do initial update with infinite depth and check that subdir exists
+            b.setScm(new SubversionSCM(Arrays.asList(locations), new UpdateUpdater(), null, null, null, null, null, null));
+            FreeStyleBuild build = assertBuildStatusSuccess(b.scheduleBuild2(0));
+            FilePath ws = build.getWorkspace();
+            assertTrue(ws.child("proja").child("subdir").exists());
+
+            // Simulate job using 'svn update --set-depth=files' and check that subdir no longer exists
+            SvnClientManager svnm = SubversionSCM.createClientManager(b);
+            svnm
+            .getUpdateClient()
+            .doUpdate(new File(ws.child("proja").getRemote()), SVNRevision.HEAD, SVNDepth.FILES, false, true);
+            
+            assertTrue(ws.child("proja").exists());
+            assertTrue(!(ws.child("proja").child("subdir").exists()));
+
+            // Trigger new build with depth unknown and check that subdir still does not exist
+            ModuleLocation[] locations2 = {
+                    new ModuleLocation("svn://localhost/jenkins-777/proja", "proja", "undefined", true)
+                };
+            b.setScm(new SubversionSCM(Arrays.asList(locations2), new UpdateUpdater(), null, null, null, null, null, null));
+            FreeStyleBuild build2 = assertBuildStatusSuccess(b.scheduleBuild2(0));
+            ws = build2.getWorkspace();
+            assertTrue(!(ws.child("proja").child("subdir").exists()));
+
+        } finally {
+            p.kill();
+        }
+    }
+
+    @Bug(16533)
+    public void testPollingRespectExternalsWithRevision() throws Exception {
+        // trunk has svn:externals="-r 1 ^/vendor vendor" (pinned)
+        // latest commit on vendor is r3 (> r1)
+        File repo = new CopyExisting(getClass().getResource("JENKINS-16533.zip")).allocate();
+        SubversionSCM scm = new SubversionSCM("file://" + repo.toURI().toURL().getPath() + "trunk");
+
+        // pinned externals should be recorded with ::p in revisions.txt
+        FreeStyleProject p = createFreeStyleProject();
+        p.setScm(scm);
+        p.setAssignedLabel(createSlave().getSelfLabel());
+        assertBuildStatusSuccess(p.scheduleBuild2(0).get());
+
+        // should not find any change (pinned externals should be skipped on poll)
+        // fail if it checks the revision of external URL larger than the pinned revision
+        assertFalse(p.poll(StreamTaskListener.fromStdout()).hasChanges());
+    }
+
+    @Bug(20165)
+    public void testPollingExternalsForFileSvn16() throws Exception {
+        configureSvnWorkspaceFormat(10 /* 1.6 (svn:externals to file) */);
+        invokeTestPollingExternalsForFile();
+    }
+
+    @Bug(20165)
+    public void testPollingExternalsForFileSvn17() throws Exception {
+        configureSvnWorkspaceFormat(SubversionWorkspaceSelector.WC_FORMAT_17);
+        invokeTestPollingExternalsForFile();
+    }
+
+    private void invokeTestPollingExternalsForFile() throws Exception {
+        // trunk has svn:externals="^/vendor/target.txt target.txt"
+        File repo = new CopyExisting(getClass().getResource("JENKINS-20165.zip")).allocate();
+        String path = "file://" + repo.toURI().toURL().getPath();
+        SubversionSCM scm = new SubversionSCM(path + "trunk");
+
+        // first checkout
+        FreeStyleProject p = createFreeStyleProject();
+        p.setScm(scm);
+        p.setAssignedLabel(createSlave().getSelfLabel());
+        assertBuildStatusSuccess(p.scheduleBuild2(0).get());
+
+        // update target.txt in vendor
+        SubversionSCM vendor = new SubversionSCM(path + "vendor");
+        createWorkingCopy(vendor);
+        changeFiles("target.txt");
+        commitWorkingCopy("update");
+
+        // should detect change
+        assertTrue(p.poll(StreamTaskListener.fromStdout()).hasChanges());
     }
 }    

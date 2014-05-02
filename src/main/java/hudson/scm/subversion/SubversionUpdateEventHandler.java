@@ -72,7 +72,12 @@ final class SubversionUpdateEventHandler extends SubversionEventHandlerImpl impl
     public SVNRevision[] handleExternal(File externalPath, SVNURL externalURL, SVNRevision externalRevision,
                                         SVNRevision externalPegRevision, String externalsDefinition,
                                         SVNRevision externalsWorkingRevision) {
-        long revisionNumber = SVNRevision.isValidRevisionNumber(externalPegRevision.getNumber()) ? externalPegRevision.getNumber() : -1;
+        long revisionNumber = -1;
+        if (SVNRevision.isValidRevisionNumber(externalRevision.getNumber())) {
+            revisionNumber = externalRevision.getNumber();
+        } else if (SVNRevision.isValidRevisionNumber(externalPegRevision.getNumber())) {
+            revisionNumber = externalPegRevision.getNumber();
+        }
         SVNExternalDetails details = new SVNExternalDetails(externalURL, revisionNumber);
 
         externalDetails.put(externalPath, details);
@@ -82,7 +87,7 @@ final class SubversionUpdateEventHandler extends SubversionEventHandlerImpl impl
     @Override
     public void handleEvent(SVNEvent event, double progress) throws SVNException {
         SVNEventAction action = event.getAction();
-        if (action == SVNEventAction.UPDATE_COMPLETED) {
+        if (action == SVNEventAction.UPDATE_EXTERNAL || action == SVNEventAction.UPDATE_COMPLETED) {
             File file = event.getFile();
             SVNExternalDetails details = externalDetails.remove(file);
             if (details != null) {
@@ -93,7 +98,7 @@ final class SubversionUpdateEventHandler extends SubversionEventHandlerImpl impl
                     throw new SVNException(SVNErrorMessage.create(SVNErrorCode.FS_GENERAL, e));
                 }
 
-                out.println(Messages.SubversionUpdateEventHandler_FetchExternal(details, event.getRevision(), file));
+                out.println(Messages.SubversionUpdateEventHandler_FetchExternal(details.getUrl(), event.getRevision(), file));
                 externals.add(new External(modulePath + '/' + path, details.getUrl(), details.getRevision()));
             }
         }

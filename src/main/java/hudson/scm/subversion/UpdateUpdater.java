@@ -87,7 +87,7 @@ public class UpdateUpdater extends WorkspaceUpdater {
                 SVNInfo svnkitInfo = parseSvnInfo(module);
                 SvnInfo svnInfo = new SvnInfo(svnkitInfo);
 
-                String url = location.getURL();
+                String url = location.getSVNURL().toString();
                 
                 if (!svnInfo.url.equals(url)) {
                     if (isSameRepository(location, svnkitInfo)) {
@@ -196,7 +196,11 @@ public class UpdateUpdater extends WorkspaceUpdater {
                     }
                     // trouble-shooting probe for #591
                     if (errorCode == SVNErrorCode.WC_NOT_LOCKED) {
-                        listener.getLogger().println("Polled jobs are " + Hudson.getInstance().getDescriptorByType(SCMTrigger.DescriptorImpl.class).getItemsBeingPolled());
+                        Hudson instance = Hudson.getInstance();
+                        if (instance != null) {
+                            listener.getLogger().println("Polled jobs are " + instance.getDescriptorByType(SCMTrigger.DescriptorImpl.class).getItemsBeingPolled());
+                        }
+                        return delegateTo(new CheckoutUpdater());
                     }
 
                   // recurse as long as we encounter nested SVNException
